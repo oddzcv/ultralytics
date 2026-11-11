@@ -19,6 +19,7 @@ from .block import DFL, SAVPE, BNContrastiveHead, ContrastiveHead, Proto, Proto2
 from .conv import Conv, DWConv
 from .transformer import MLP, DeformableTransformerDecoder, DeformableTransformerDecoderLayer
 from .utils import bias_init_with_prob
+from ultralytics.nn.modules.boundary_proto import BoundaryProto26
 
 __all__ = (
     "OBB",
@@ -460,6 +461,61 @@ class Segment26(Segment):
         if hasattr(self.proto, "fuse"):
             self.proto.fuse()
 
+class BoundarySegment26(Segment26):
+    """
+    YOLO26 Segment head with Boundary-Guided Prototype Refinement (K1).
+    Fuses low-level P2 (40x40) with context P3 (20x20) via DySample and Boundary Attention Map.
+    """
+
+    def __init__(
+        self,
+        nc: int = 80,
+        nm: int = 32,
+        npr: int = 256,
+        reg_max: int = 16,
+        end2end: bool = False,
+        ch: list[int] | tuple[int, ...] = (),
+    ):
+        # ch berisi 4 saluran: [P2, P3, P4, P5]
+        # Kotak deteksi hanya memakai [P3, P4, P5] agar efisiensi Jetson Orin Nano terjaga
+        ch_det = ch[1:] if len(ch) == 4 else ch
+        super().__init__(nc, nm, npr, reg_max, end2end, ch_det)
+        
+        # Prototype head menggunakan BoundaryProto26 dengan seluruh input fitur [P2, P3, P4, P5]
+        self.proto = BoundaryProto26(ch=ch, c_=self.npr, c2=self.nm)
+
+    def forward(self, x: list[torch.Tensor]) -> tuple | list[torch.Tensor] | dict[str, torch.Tensor]:
+        """Forward pass with boundary map supervision."""
+        x_det = x[1:] if len(x) == 4 else x
+        outputs = Detect.forward(self, x_det)
+        preds = outputs[1] if isinstance(outputs, tuple) else outputs
+        
+        # Jalankan BoundaryProto26
+        proto_out = self.proto(x)
+        if isinstance(proto_out, tuple):
+            proto, boundary_map = proto_out
+        else:
+            proto = proto_out
+            boundary_map = None
+
+        if isinstance(preds, dict):  # Mode training
+            if "one2many" in preds and "one2one" in preds:
+                preds["one2many"]["proto"] = proto
+                preds["one2many"]["boundary_map"] = boundary_map
+                preds["one2one"]["proto"] = (
+                    tuple(p.detach() for p in proto) if isinstance(proto, tuple) else proto.detach()
+                )
+                if boundary_map is not None:
+                    preds["one2one"]["boundary_map"] = boundary_map.detach()
+            else:
+                preds["proto"] = proto
+                if boundary_map is not None:
+                    preds["boundary_map"] = boundary_map
+
+        if self.training:
+            return preds
+
+        return (outputs, proto) if self.export else ((outputs[0], proto), preds)
 
 class OBB(Detect):
     """YOLO OBB detection head for detection with rotation models.

@@ -577,11 +577,40 @@ class v8SegmentationLoss(v8DetectionLoss):
                 loss[4] = self.bcedice_loss(pred_semantic, sem_masks)
                 loss[4] *= self.hyp.box  # seg gain
 
+            # Kontribusi 1 (K1): Boundary Region Loss (L_boundary)
+            boundary_map = preds.get("boundary_map", None)
+            if boundary_map is not None:
+                if self.overlap:
+                    present_b = (masks != 0).float()
+                else:
+                    batch_idx = batch["batch_idx"].view(-1)
+                    present_b = torch.zeros(batch_size, *masks.shape[-2:], device=self.device)
+                    for i in range(batch_size):
+                        inst_i = masks[batch_idx == i]
+                        if len(inst_i):
+                            present_b[i] = (inst_i.sum(dim=0) != 0).float()
+                if present_b.dim() == 3:
+                    present_b = present_b.unsqueeze(1)
+                if present_b.shape[-2:] != boundary_map.shape[-2:]:
+                    present_b = F.interpolate(present_b, size=boundary_map.shape[-2:], mode="nearest")
+                
+                # Ekstrak pita batas ground truth via morphological gradient
+                dilated = F.max_pool2d(present_b, kernel_size=3, stride=1, padding=1)
+                eroded = -F.max_pool2d(-present_b, kernel_size=3, stride=1, padding=1)
+                gt_boundary = (dilated - eroded).clamp(0.0, 1.0)
+                
+                # Hitung loss supervisi tepi bedengan
+                b_loss = F.binary_cross_entropy(boundary_map, gt_boundary)
+                loss[4] = loss[4] + b_loss * self.hyp.box
+
         # WARNING: lines below prevent Multi-GPU DDP 'unused gradient' PyTorch errors, do not remove
         else:
             loss[1] += (proto * 0).sum() + (pred_masks * 0).sum()  # inf sums may lead to nan loss
             if pred_semantic is not None:
                 loss[4] += (pred_semantic * 0).sum()
+            boundary_map = preds.get("boundary_map", None)
+            if boundary_map is not None:
+                loss[4] += (boundary_map * 0).sum()
 
         loss[1] *= self.hyp.box  # seg gain
         return loss * batch_size, dict(zip(self.loss_names, loss.detach()))  # loss(box, seg, cls, dfl, semantic)
