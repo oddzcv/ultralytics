@@ -599,8 +599,8 @@ class v8SegmentationLoss(v8DetectionLoss):
                 eroded = -F.max_pool2d(-present_b, kernel_size=3, stride=1, padding=1)
                 gt_boundary = (dilated - eroded).clamp(0.0, 1.0)
                 
-                # Hitung loss supervisi tepi bedengan
-                b_loss = F.binary_cross_entropy(boundary_map, gt_boundary)
+                # Hitung loss supervisi tepi bedengan (BCE with logits aman untuk AMP autocast)
+                b_loss = F.binary_cross_entropy_with_logits(boundary_map.float(), gt_boundary.float())
                 loss[4] = loss[4] + b_loss * self.hyp.box
 
         # WARNING: lines below prevent Multi-GPU DDP 'unused gradient' PyTorch errors, do not remove

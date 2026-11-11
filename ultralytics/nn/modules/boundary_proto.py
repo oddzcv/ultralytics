@@ -42,12 +42,11 @@ class BoundaryProto26(nn.Module):
         # 3. Penyelaras fitur P2 (Backbone -> Proto space): phi(F2)
         self.phi_p2 = Conv(c_p2, c_, k=1)
 
-        # 4. Boundary Head: menghasilkan Boundary Attention Map B (1 x 40 x 40)
-        # Nilai diaktifkan dengan Sigmoid agar berada pada rentang [0, 1]
+        # 4. Boundary Head: menghasilkan Boundary Logits (1 x 40 x 40)
+        # Catatan: Sigmoid dihitung saat forward agar kompatibel dengan BCEWithLogits (aman untuk AMP autocast)
         self.boundary_conv = nn.Sequential(
             Conv(c_, c_, k=3),
             nn.Conv2d(c_, 1, kernel_size=1, bias=True),
-            nn.Sigmoid()
         )
 
         # 5. Prototype Generation Layers: F_fused -> 32 Prototype Masks
@@ -87,8 +86,9 @@ class BoundaryProto26(nn.Module):
         # 3. Ekstrak fitur detail P2: phi(F2)
         detail_40 = self.phi_p2(p2)          # Shape: (B, c_, 40, 40)
 
-        # 4. Hasilkan Boundary Attention Map B in [0, 1]
-        boundary_map = self.boundary_conv(detail_40)  # Shape: (B, 1, 40, 40)
+        # 4. Hasilkan Boundary Attention Map B in [0, 1] via Sigmoid
+        boundary_logits = self.boundary_conv(detail_40)  # Shape: (B, 1, 40, 40)
+        boundary_map = boundary_logits.sigmoid()
 
         # 5. Boundary-Guided Fusion:
         # F_fused = DySample(P3) + B * phi(P2)
@@ -98,7 +98,7 @@ class BoundaryProto26(nn.Module):
         # 6. Hasilkan 32 Prototype Masks
         proto = self.cv_proto(self.cv_fuse(fused))  # Shape: (B, 32, 40, 40)
 
-        # Kembalikan tuple (proto, boundary_map) saat training untuk perhitungan L_boundary
+        # Kembalikan tuple (proto, boundary_logits) saat training untuk perhitungan L_boundary via BCEWithLogits
         if self.training:
-            return proto, boundary_map
+            return proto, boundary_logits
         return proto
