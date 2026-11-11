@@ -51,9 +51,11 @@ class DySample(nn.Module):
         offset = self.offset_conv(x)
         
         # Reshape & rearrange offset ke dimensi target (B*groups, out_h, out_w, 2)
-        offset = offset.view(b, self.groups, 2, self.scale, self.scale, h, w)
+        # Catatan: gunakan reshape (bukan view) karena saat training tensor bisa
+        # non-contiguous (mis. memory format channels_last / AMP)
+        offset = offset.reshape(b, self.groups, 2, self.scale, self.scale, h, w)
         offset = offset.permute(0, 1, 5, 3, 6, 4, 2).contiguous()
-        offset = offset.view(b * self.groups, out_h, out_w, 2)
+        offset = offset.reshape(b * self.groups, out_h, out_w, 2)
 
         # Skala offset dinamis agar pergeseran koordinat halus
         offset = offset * (1.0 / max(out_h, out_w))
@@ -63,7 +65,7 @@ class DySample(nn.Module):
         sampling_grid = (base_grid + offset).clamp(-1.0, 1.0)
 
         # 3. Reshape input fitur per grup dan lakukan sampling adaptif
-        x_grouped = x.view(b * self.groups, c // self.groups, h, w)
+        x_grouped = x.contiguous().reshape(b * self.groups, c // self.groups, h, w)
         
         # F.grid_sample melakukan interpolasi bilinear adaptif berdasarkan sampling_grid
         out = F.grid_sample(
@@ -75,4 +77,4 @@ class DySample(nn.Module):
         )
 
         # 4. Kembalikan ke shape output asli (B, C, H*scale, W*scale)
-        return out.view(b, c, out_h, out_w)
+        return out.reshape(b, c, out_h, out_w)
